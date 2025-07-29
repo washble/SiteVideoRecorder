@@ -40,81 +40,94 @@ def wait_for_page_and_video(driver, page_timeout=10, video_timeout=15):
     """)
     time.sleep(5)
 
-def inject_recorder_script(driver, record_seconds=10, chunk_ms=1000):
+def inject_recorder_script(driver, chunk_ms=1000):
     js = rf"""
-    (async function() {{
-      // video 요소 찾기 (페이지 + iframe)
-      function findVideo() {{
-        const v = document.querySelector('video');
-        if (v) return v;
-        for (const iframe of document.querySelectorAll('iframe')) {{
-          try {{
-            const doc = iframe.contentDocument || iframe.contentWindow.document;
-            const vid = doc.querySelector('video');
-            if (vid) return vid;
-          }} catch {{ }}
-        }}
-        return null;
-      }}
-
-      const video = findVideo();
-      if (!video) {{ alert("No video"); return; }}
-
-      // 재생 보장
-      video.muted = true;
-      if (video.paused) {{
-        await video.play();
-      }}
-
-      // 메타데이터 로드 또는 canplay 대기
-      if (video.readyState < 2) {{
-        await new Promise(r => video.onloadedmetadata = r);
-      }}
-
-      // 스트림 확보
-      const stream = video.captureStream(60);
-      const mime = MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
-        ? 'video/webm;codecs=vp9'
-        : 'video/webm';
-
-      let part = 0;
-      const uploads = [];
-      const recorder = new MediaRecorder(stream, {{ mimeType: mime }});
-
-      recorder.ondataavailable = e => {{
-        if (!e.data || e.data.size === 0) return;
-        console.log(`[chunk ${{part}}] size=${{e.data.size}}`);
-        const p = fetch(
-          'http://localhost:5000/upload?part=' + part, {{
-            method: 'POST',
-            mode: 'cors',
-            headers: {{ 'Content-Type': 'video/webm' }},
-            body: e.data
+    window._recorder_control = {{
+      recorder: null,
+      part: 0,
+      uploads: [],
+      start: async function() {{
+        function findVideo() {{
+          const v = document.querySelector('video');
+          if (v) return v;
+          for (const iframe of document.querySelectorAll('iframe')) {{
+            try {{
+              const doc = iframe.contentDocument || iframe.contentWindow.document;
+              const vid = doc.querySelector('video');
+              if (vid) return vid;
+            }} catch {{ }}
           }}
-        )
-        .then(res => console.log(`[chunk ${{part}}] upload status:`, res.status))
-        .catch(err => console.error(`[chunk ${{part}}] upload failed:`, err));
-        uploads.push(p);
-        part++;
-      }};
+          return null;
+        }}
 
-      recorder.onstop = async () => {{
-        console.log('Recording stopped, waiting for uploads...');
-        await Promise.all(uploads);
-        console.log('All chunks uploaded, merging...');
-        const res = await fetch('http://localhost:5000/merge', {{
-          method: 'POST',
-          mode: 'cors'
-        }});
-        console.log('Merge status:', res.status);
-        console.log('Upload & merge done');
-      }};
+        const video = findVideo();
+        if (!video) {{ alert("No video"); return; }}
 
-      recorder.start({chunk_ms});                       // 1초 단위 청크
-      setTimeout(() => recorder.stop(), {record_seconds * 1000});  // 녹화 시간
-    }})();
+        video.muted = true;
+        if (video.paused) {{
+          await video.play();
+        }}
+
+        if (video.readyState < 2) {{
+          await new Promise(r => video.onloadedmetadata = r);
+        }}
+
+        const stream = video.captureStream(60);
+        const mime = MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
+          ? 'video/webm;codecs=vp9'
+          : 'video/webm';
+
+        const recorder = new MediaRecorder(stream, {{ mimeType: mime }});
+        this.recorder = recorder;
+
+        recorder.ondataavailable = e => {{
+          if (!e.data || e.data.size === 0) return;
+          const p = fetch(
+            'http://localhost:5000/upload?part=' + this.part, {{
+              method: 'POST',
+              mode: 'cors',
+              headers: {{ 'Content-Type': 'video/webm' }},
+              body: e.data
+            }}
+          )
+          .then(res => console.log(`[chunk ${{this.part}}] upload status:`, res.status))
+          .catch(err => console.error(`[chunk ${{this.part}}] upload failed:`, err));
+          this.uploads.push(p);
+          this.part++;
+        }};
+
+        recorder.onstop = async () => {{
+          console.log('Recording stopped, waiting for uploads...');
+          await Promise.all(this.uploads);
+          console.log('All chunks uploaded, merging...');
+          const res = await fetch('http://localhost:5000/merge', {{
+            method: 'POST',
+            mode: 'cors'
+          }});
+          console.log('Merge status:', res.status);
+          console.log('Upload & merge done');
+        }};
+
+        recorder.start({chunk_ms});
+        console.log("Recording started.");
+      }},
+      stop: function() {{
+        if (this.recorder && this.recorder.state === "recording") {{
+          this.recorder.stop();
+          console.log("Recording stopped.");
+        }} else {{
+          console.log("Recorder not active.");
+        }}
+      }}
+    }};
     """
     driver.execute_script(js)
+
+def start_recording(driver):
+    driver.execute_script("window._recorder_control?.start?.();")
+
+def stop_recording(driver):
+    driver.execute_script("window._recorder_control?.stop?.();")
 
 def main():
     url = "https://www.youtube.com/watch?v=JvW29MP8Nxo"
@@ -122,10 +135,15 @@ def main():
 
     try:
         wait_for_page_and_video(driver)
-        inject_recorder_script(driver, record_seconds=10, chunk_ms=1000)
+        inject_recorder_script(driver, chunk_ms=1000)
 
-        # 충분히 녹화 & 업로드 대기
-        time.sleep(15)
+        input("🎬 Enter 키를 누르면 녹화를 시작합니다: ")
+        start_recording(driver)
+
+        input("🛑 Enter 키를 누르면 녹화를 종료합니다: ")
+        stop_recording(driver)
+
+        time.sleep(5)
 
     finally:
         driver.quit()
