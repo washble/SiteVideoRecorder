@@ -68,12 +68,19 @@ class SimpleConcatHandler(BaseHTTPRequestHandler):
                         in_path = os.path.join(RECORD_DIR, fn)
                         with open(in_path, "rb") as inp:
                             out.write(inp.read())
+
+                # merge 완료 로그
                 print("[MERGE] Concatenated:", chunk_files)
+
+                # --- 여기서 chunk 파일들 삭제 ---
+                for fn in chunk_files:
+                    os.remove(os.path.join(RECORD_DIR, fn))
+                print("[MERGE] Removed chunks:", chunk_files)
 
                 self.send_response(200)
                 self.send_header('Access-Control-Allow-Origin', '*')
                 self.end_headers()
-                self.wfile.write(b"merged")
+                self.wfile.write(b"merged and cleaned up")
             except Exception as e:
                 print("[MERGE][ERROR]", e)
                 self.send_response(500)
