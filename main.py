@@ -18,15 +18,12 @@ def setup_driver(startup_url):
     return driver
 
 def wait_for_page_and_video(driver, page_timeout=10, video_timeout=15):
-    # 1) 페이지 로드 완료 대기
     WebDriverWait(driver, page_timeout).until(
         lambda d: d.execute_script("return document.readyState") == "complete"
     )
-    # 2) <video> 요소가 DOM에 나타날 때까지 대기
     WebDriverWait(driver, video_timeout).until(
         EC.presence_of_element_located((By.CSS_SELECTOR, "video"))
     )
-    # 3) 비디오 메타데이터 로드 대기
     driver.execute_script("""
       const video = document.querySelector('video');
       if (!video) throw 'Video element not found';
@@ -59,18 +56,11 @@ def inject_recorder_script(driver, chunk_ms=1000):
           }}
           return null;
         }}
-
         const video = findVideo();
         if (!video) {{ alert("No video"); return; }}
-
         video.muted = true;
-        if (video.paused) {{
-          await video.play();
-        }}
-
-        if (video.readyState < 2) {{
-          await new Promise(r => video.onloadedmetadata = r);
-        }}
+        await video.play();
+        if (video.readyState < 2) await new Promise(r => video.onloadedmetadata = r);
 
         const stream = video.captureStream(60);
         const mime = MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
@@ -123,11 +113,34 @@ def inject_recorder_script(driver, chunk_ms=1000):
     """
     driver.execute_script(js)
 
+    # 동영상 끝나면 자동으로 녹화 중지
+    driver.execute_script("""
+      const video = document.querySelector('video');
+      if (video) {
+        video.addEventListener('ended', () => {
+          if (window._recorder_control?.recorder?.state === 'recording') {
+            window._recorder_control.stop();
+          }
+        });
+      }
+    """)
+
 def start_recording(driver):
-    driver.execute_script("window._recorder_control?.start?.();")
+    # 매번 새 세션으로 chunk 번호 리셋
+    driver.execute_script("""
+      if (window._recorder_control) {
+        window._recorder_control.part = 0;
+        window._recorder_control.uploads = [];
+        window._recorder_control.start();
+      }
+    """)
 
 def stop_recording(driver):
-    driver.execute_script("window._recorder_control?.stop?.();")
+    driver.execute_script("""
+      window._recorder_control?.stop?.();
+      const video = document.querySelector('video');
+      if (video) video.pause();
+    """)
 
 def main():
     url = "https://www.youtube.com/watch?v=JvW29MP8Nxo"
@@ -137,13 +150,17 @@ def main():
         wait_for_page_and_video(driver)
         inject_recorder_script(driver, chunk_ms=1000)
 
-        input("🎬 Enter 키를 누르면 녹화를 시작합니다: ")
-        start_recording(driver)
+        while True:
+            cmd = input("🎬 Enter 키를 누르면 녹화를 시작합니다 (q + Enter → 종료): ")
+            if cmd.lower() == 'q':
+                break
 
-        input("🛑 Enter 키를 누르면 녹화를 종료합니다: ")
-        stop_recording(driver)
+            start_recording(driver)
+            input("🛑 Enter 키를 누르면 녹화를 종료합니다: ")
+            stop_recording(driver)
 
-        time.sleep(5)
+            print("✅ 녹화가 종료되었습니다. 다시 시작할 준비가 되었습니다.\n")
+            time.sleep(1)
 
     finally:
         driver.quit()
