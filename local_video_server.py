@@ -5,6 +5,17 @@ import sys
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
+# pip install pyinstaller
+
+'''
+[exe build]
+- Just make exe -
+> pyinstaller local_video_server.py
+
+- Only One exe File -
+> pyinstaller -F local_video_server.py
+'''
+
 RECORD_DIR = "recordings"
 FINAL_FILE = "final_recording.webm"
 
