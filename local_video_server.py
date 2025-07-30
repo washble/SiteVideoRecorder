@@ -24,26 +24,40 @@ def start_ffmpeg():
 
 ffmpeg = start_ffmpeg()
 
-# NOTE: chunk는 queue담고 feed pipe이 성공할 때만 chunk지우기 
-# (현재 재녹화 시 ffmpeg = start_ffmpeg()가 제 때 되지 않음)
-def feed_pipe(data: bytes):
+# pending_chunks: (filename, data) 를 쌓아두고, feed_pipe 성공 시에만 삭제
+pending_chunks = []
+
+def feed_pipe(data: bytes) -> bool:
     global ffmpeg
     try:
-        # 1) 정상 쓰기 시도
         ffmpeg.stdin.write(data)
         ffmpeg.stdin.flush()
-
+        return True
     except (BrokenPipeError, ValueError, OSError) as e:
-        # 2) 에러 발생 시 종료 감지 → 재시작
         print(f"[FEED ERROR] {e}, restarting ffmpeg...")
         ffmpeg = start_ffmpeg()
-
-        # 3) 한 번만 재시도
         try:
             ffmpeg.stdin.write(data)
             ffmpeg.stdin.flush()
+            return True
         except Exception as e2:
             print(f"[FEED RETRY ERROR] {e2}")
+            return False
+
+def process_queue():
+    global pending_chunks
+    new_queue = []
+    for fn, chunk in pending_chunks:
+        success = feed_pipe(chunk)
+        if success:
+            try:
+                os.remove(fn)
+                print(f"[CLEANUP] removed {fn}")
+            except OSError as e:
+                print(f"[CLEANUP ERROR] {e}")
+        else:
+            new_queue.append((fn, chunk))
+    pending_chunks = new_queue
 
 class SimpleConcatHandler(BaseHTTPRequestHandler):
     def handle_one_request(self):
@@ -75,11 +89,9 @@ class SimpleConcatHandler(BaseHTTPRequestHandler):
                 f.write(chunk)
             print(f"[UPLOAD] saved chunk_{idx}.webm ({size} bytes)")
 
-            # 해당 chunk 데이터를 ffmpeg 파이프에 전달하여 녹화에 포함시킴
-            feed_pipe(chunk)
-            
-            # chunk 파일을 디스크에서 삭제하여 저장 공간 낭비 방지
-            os.remove(fn)
+            # 큐에 추가 → process_queue() 호출
+            pending_chunks.append((fn, chunk))
+            process_queue()
 
             self.send_response(200)
             self.send_header('Access-Control-Allow-Origin', '*')
