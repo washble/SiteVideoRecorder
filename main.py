@@ -67,7 +67,11 @@ def inject_recorder_script(driver, chunk_ms=1000):
           ? 'video/webm;codecs=vp9'
           : 'video/webm';
 
-        const recorder = new MediaRecorder(stream, {{ mimeType: mime }});
+        const recorder = new MediaRecorder(stream, {{
+          mimeType: mime,
+          videoBitsPerSecond: 12000000,
+          audioBitsPerSecond: 192000
+        }});
         this.recorder = recorder;
 
         recorder.ondataavailable = e => {{
