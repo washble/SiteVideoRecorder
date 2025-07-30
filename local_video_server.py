@@ -2,6 +2,7 @@
 import os
 import subprocess
 import sys
+import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
@@ -17,11 +18,12 @@ from urllib.parse import urlparse, parse_qs
 '''
 
 RECORD_DIR = "recordings"
-FINAL_FILE = "final_recording.webm"
 
 os.makedirs(RECORD_DIR, exist_ok=True)
 
 def start_ffmpeg():
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_file = os.path.join(RECORD_DIR, f"final_recording_{timestamp}.webm")
     return subprocess.Popen([
         "ffmpeg",
         "-hide_banner",
@@ -30,7 +32,7 @@ def start_ffmpeg():
         "-f", "webm",
         "-i", "pipe:0",
         "-c", "copy",
-        os.path.join(RECORD_DIR, FINAL_FILE)
+        output_file
     ], stdin=subprocess.PIPE)
 
 ffmpeg = start_ffmpeg()
