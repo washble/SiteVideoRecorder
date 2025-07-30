@@ -147,7 +147,7 @@ def stop_recording(driver):
     """)
 
 def main():
-    url = "https://www.youtube.com/watch?v=u-WBRL9KO5I"
+    url = "https://youtu.be/fUi4Ej9guxs?t=3584"
     driver = setup_driver(url)
 
     try:
