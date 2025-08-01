@@ -76,6 +76,8 @@ javascript:(function() {
   } else {
     video.addEventListener('loadedmetadata', startRecording);
   }
+
+  console.log('📌 브라우저에서 하드웨어 인코딩 활성화: chrome://flags/#enable-webrtc-hw-encoding');
 })();
 
 // 녹화 정지
