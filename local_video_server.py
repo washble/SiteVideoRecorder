@@ -7,6 +7,8 @@ import uuid
 import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
+from socketserver import ThreadingMixIn
+from concurrent.futures import ThreadPoolExecutor
 
 # pip install pyinstaller
 
@@ -40,17 +42,24 @@ def start_ffmpeg(session_id: str):
     ], stdin=subprocess.PIPE)
 
 class SimpleConcatHandler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"   # HTTP/1.1 사용 선언
+
     def handle_one_request(self):
         try:
             super().handle_one_request()
         except ConnectionResetError:
             pass
 
+    def _set_common_headers(self, body_len=0):
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Connection', 'keep-alive')
+        self.send_header('Content-Length', str(body_len))
+
     def do_OPTIONS(self):
         self.send_response(200)
-        self.send_header('Access-Control-Allow-Origin', '*')
+        self._set_common_headers(0)
         self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type, Accept, X-Requested-With')
         self.end_headers()
 
     def do_GET(self):
@@ -63,10 +72,11 @@ class SimpleConcatHandler(BaseHTTPRequestHandler):
             # 세션별 ffmpeg 프로세스 시작
             sessions[session_id] = start_ffmpeg(session_id)
 
+            body = session_id.encode()
             self.send_response(200)
-            self.send_header('Access-Control-Allow-Origin', '*')
+            self._set_common_headers(len(body))
             self.end_headers()
-            self.wfile.write(session_id.encode())
+            self.wfile.write(body)
             return
 
         # GET /merge 지원: merge도 POST로 처리하므로 여기선 404
@@ -83,12 +93,6 @@ class SimpleConcatHandler(BaseHTTPRequestHandler):
             size = int(self.headers.get('Content-Length', 0))
             chunk = self.rfile.read(size)
 
-            # (변경) 개별 청크 파일 저장 제거
-            # fn = os.path.join(RECORD_DIR, f"{session_id}_chunk_{idx}.webm")
-            # with open(fn, "wb") as f:
-            #     f.write(chunk)
-            # print(f"[UPLOAD] session={session_id} part={idx} saved ({size} bytes)")
-
             proc = sessions[session_id]
             try:
                 proc.stdin.write(chunk)
@@ -96,14 +100,15 @@ class SimpleConcatHandler(BaseHTTPRequestHandler):
             except Exception as e:
                 print(f"[FEED ERROR] session={session_id} {e}")
 
+            body = b"ok"
             self.send_response(200)
-            self.send_header('Access-Control-Allow-Origin', '*')
+            self._set_common_headers(len(body))
             self.end_headers()
-            self.wfile.write(b"ok")
+            self.wfile.write(body)
             return
 
         if path == "/merge":
-            # (변경) session 쿼리가 없더라도, 활성 세션이 하나면 자동으로 병합
+            # session 쿼리가 없더라도, 활성 세션이 하나면 자동으로 병합
             if session_id in sessions:
                 sid = session_id
             elif session_id is None and len(sessions) == 1:
@@ -118,18 +123,27 @@ class SimpleConcatHandler(BaseHTTPRequestHandler):
                 proc.wait()
                 print(f"[MERGE] session={sid} finalized")
 
+            body = b"merge done"
             self.send_response(200)
-            self.send_header('Access-Control-Allow-Origin', '*')
+            self._set_common_headers(len(body))
             self.end_headers()
-            self.wfile.write(b"merge done")
+            self.wfile.write(body)
             return
 
         self.send_error(404, "Not Found")
 
-def run(port=5000):
-    server = HTTPServer(('', port), SimpleConcatHandler)
-    print(f"Server running at http://localhost:{port}")
+class PoolMixIn:
+    executor = ThreadPoolExecutor(max_workers=20)
 
+    def process_request(self, request, client_address):
+        self.executor.submit(self.finish_request, request, client_address)
+
+class ThreadedHTTPServer(PoolMixIn, ThreadingMixIn, HTTPServer):
+    daemon_threads = True  # 서버 종료 시 스레드 자동 정리
+
+def run(port=5000):
+    server = ThreadedHTTPServer(('', port), SimpleConcatHandler)
+    print(f"Threaded Server running at http://localhost:{port}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
