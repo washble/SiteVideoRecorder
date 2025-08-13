@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
+
 import os
 import subprocess
 import sys
+import uuid
 import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
@@ -18,12 +20,14 @@ from urllib.parse import urlparse, parse_qs
 '''
 
 RECORD_DIR = "recordings"
-
 os.makedirs(RECORD_DIR, exist_ok=True)
 
-def start_ffmpeg():
+# session_id -> ffmpeg subprocess
+sessions = {}
+
+def start_ffmpeg(session_id: str):
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_file = os.path.join(RECORD_DIR, f"final_recording_{timestamp}.webm")
+    output_file = os.path.join(RECORD_DIR, f"{session_id}_{timestamp}.webm")
     return subprocess.Popen([
         "ffmpeg",
         "-hide_banner",
@@ -34,43 +38,6 @@ def start_ffmpeg():
         "-c", "copy",
         output_file
     ], stdin=subprocess.PIPE)
-
-ffmpeg = start_ffmpeg()
-
-# pending_chunks: (filename, data) 를 쌓아두고, feed_pipe 성공 시에만 삭제
-pending_chunks = []
-
-def feed_pipe(data: bytes) -> bool:
-    global ffmpeg
-    try:
-        ffmpeg.stdin.write(data)
-        ffmpeg.stdin.flush()
-        return True
-    except (BrokenPipeError, ValueError, OSError) as e:
-        print(f"[FEED ERROR] {e}, restarting ffmpeg...")
-        ffmpeg = start_ffmpeg()
-        try:
-            ffmpeg.stdin.write(data)
-            ffmpeg.stdin.flush()
-            return True
-        except Exception as e2:
-            print(f"[FEED RETRY ERROR] {e2}")
-            return False
-
-def process_queue():
-    global pending_chunks
-    new_queue = []
-    for fn, chunk in pending_chunks:
-        success = feed_pipe(chunk)
-        if success:
-            try:
-                os.remove(fn)
-                print(f"[CLEANUP] removed {fn}")
-            except OSError as e:
-                print(f"[CLEANUP ERROR] {e}")
-        else:
-            new_queue.append((fn, chunk))
-    pending_chunks = new_queue
 
 class SimpleConcatHandler(BaseHTTPRequestHandler):
     def handle_one_request(self):
@@ -86,25 +53,48 @@ class SimpleConcatHandler(BaseHTTPRequestHandler):
         self.send_header('Access-Control-Allow-Headers', 'Content-Type')
         self.end_headers()
 
-    def do_POST(self):
-        global ffmpeg
+    def do_GET(self):
         parsed = urlparse(self.path)
         path = parsed.path
 
-        if path == "/upload":
-            qs    = parse_qs(parsed.query)
-            idx   = qs.get("part", ["0"])[0]
-            size  = int(self.headers.get('Content-Length', 0))
+        if path == "/session":
+            # 발급된 고유 세션 ID 생성
+            session_id = str(uuid.uuid4())
+            # 세션별 ffmpeg 프로세스 시작
+            sessions[session_id] = start_ffmpeg(session_id)
+
+            self.send_response(200)
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            self.wfile.write(session_id.encode())
+            return
+
+        # GET /merge 지원: merge도 POST로 처리하므로 여기선 404
+        self.send_error(404, "Not Found")
+
+    def do_POST(self):
+        parsed = urlparse(self.path)
+        path = parsed.path
+        qs = parse_qs(parsed.query)
+        session_id = qs.get("session", [None])[0]
+        idx = qs.get("part", ["0"])[0]
+
+        if path == "/upload" and session_id in sessions:
+            size = int(self.headers.get('Content-Length', 0))
             chunk = self.rfile.read(size)
 
-            fn = os.path.join(RECORD_DIR, f"chunk_{idx}.webm")
-            with open(fn, "wb") as f:
-                f.write(chunk)
-            print(f"[UPLOAD] saved chunk_{idx}.webm ({size} bytes)")
+            # (변경) 개별 청크 파일 저장 제거
+            # fn = os.path.join(RECORD_DIR, f"{session_id}_chunk_{idx}.webm")
+            # with open(fn, "wb") as f:
+            #     f.write(chunk)
+            # print(f"[UPLOAD] session={session_id} part={idx} saved ({size} bytes)")
 
-            # 큐에 추가 → process_queue() 호출
-            pending_chunks.append((fn, chunk))
-            process_queue()
+            proc = sessions[session_id]
+            try:
+                proc.stdin.write(chunk)
+                proc.stdin.flush()
+            except Exception as e:
+                print(f"[FEED ERROR] session={session_id} {e}")
 
             self.send_response(200)
             self.send_header('Access-Control-Allow-Origin', '*')
@@ -113,39 +103,45 @@ class SimpleConcatHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/merge":
-            if ffmpeg.stdin:
-                ffmpeg.stdin.close()
-                ffmpeg.wait()
-                print("[MERGE] ffmpeg pipe closed, final file saved")
+            # (변경) session 쿼리가 없더라도, 활성 세션이 하나면 자동으로 병합
+            if session_id in sessions:
+                sid = session_id
+            elif session_id is None and len(sessions) == 1:
+                sid = next(iter(sessions))
+            else:
+                self.send_error(404, "Session not found for merge")
+                return
 
-            ffmpeg = start_ffmpeg()
+            proc = sessions.pop(sid)
+            if proc.stdin:
+                proc.stdin.close()
+                proc.wait()
+                print(f"[MERGE] session={sid} finalized")
 
             self.send_response(200)
             self.send_header('Access-Control-Allow-Origin', '*')
             self.end_headers()
-            self.wfile.write(b"reset done")
+            self.wfile.write(b"merge done")
             return
 
-        self.send_error(404, "Not Found")
-
-    def do_GET(self):
-        if urlparse(self.path).path == "/merge":
-            return self.do_POST()
         self.send_error(404, "Not Found")
 
 def run(port=5000):
     server = HTTPServer(('', port), SimpleConcatHandler)
     print(f"Server running at http://localhost:{port}")
+
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         print("\nShutdown requested…")
     finally:
         server.shutdown()
-        if ffmpeg.stdin:
-            ffmpeg.stdin.close()
-        ffmpeg.wait()
-        print("ffmpeg terminated cleanly.")
+        # 모든 세션 ffmpeg 프로세스 종료
+        for session_id, proc in sessions.items():
+            if proc.stdin:
+                proc.stdin.close()
+            proc.wait()
+            print(f"[SHUTDOWN] session={session_id} process terminated")
         sys.exit(0)
 
 if __name__ == "__main__":
