@@ -133,7 +133,7 @@ class SimpleConcatHandler(BaseHTTPRequestHandler):
         self.send_error(404, "Not Found")
 
 class PoolMixIn:
-    executor = ThreadPoolExecutor(max_workers=20)
+    executor = ThreadPoolExecutor(max_workers=3)
 
     def process_request(self, request, client_address):
         self.executor.submit(self.finish_request, request, client_address)
