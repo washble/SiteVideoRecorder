@@ -149,4 +149,11 @@ def run(port=5000):
         sys.exit(0)
 
 if __name__ == "__main__":
-    run()
+    try:
+        user_input = input("서버 포트를 입력하세요 (기본값: 5000): ").strip()
+        port = int(user_input) if user_input else 5000
+    except ValueError:
+        print("잘못된 입력입니다. 기본 포트 5000번을 사용합니다.")
+        port = 5000
+
+    run(port)
