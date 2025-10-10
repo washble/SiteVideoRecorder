@@ -44,7 +44,11 @@ def inject_recorder_script(driver, chunk_ms=1000):
       recorder: null,
       part: 0,
       uploads: [],
+      session_id: null,
       start: async function() {{
+        const sessionRes = await fetch('http://localhost:5000/session');
+        this.session_id = await sessionRes.text();
+
         function findVideo() {{
           const v = document.querySelector('video');
           if (v) return v;
@@ -78,7 +82,7 @@ def inject_recorder_script(driver, chunk_ms=1000):
         recorder.ondataavailable = e => {{
           if (!e.data || e.data.size === 0) return;
           const p = fetch(
-            'http://localhost:5000/upload?part=' + this.part, {{
+            'http://localhost:5000/upload?session=' + this.session_id + '&part=' + this.part, {{
               method: 'POST',
               mode: 'cors',
               headers: {{ 'Content-Type': 'video/webm' }},
@@ -95,7 +99,7 @@ def inject_recorder_script(driver, chunk_ms=1000):
           console.log('Recording stopped, waiting for uploads...');
           await Promise.all(this.uploads);
           console.log('All chunks uploaded, merging...');
-          const res = await fetch('http://localhost:5000/merge', {{
+          const res = await fetch('http://localhost:5000/merge?session=' + this.session_id, {{
             method: 'POST',
             mode: 'cors'
           }});
@@ -131,7 +135,6 @@ def inject_recorder_script(driver, chunk_ms=1000):
     """)
 
 def start_recording(driver):
-    # 매번 새 세션으로 chunk 번호 리셋
     driver.execute_script("""
       if (window._recorder_control) {
         window._recorder_control.part = 0;
