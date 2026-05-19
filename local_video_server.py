@@ -36,6 +36,7 @@ def start_ffmpeg(session_id: str):
         "-loglevel", "error",
         "-y",
         "-f", "webm",
+        "-err_detect", "ignore_err",
         "-i", "pipe:0",
         "-c", "copy",
         output_file
@@ -122,6 +123,34 @@ class SimpleConcatHandler(BaseHTTPRequestHandler):
                 proc.stdin.close()
                 proc.wait()
                 print(f"[MERGE] session={sid} finalized")
+                
+                try:
+                    # 방금 막 파이프가 닫히며 생성된 파일 경로를 추적합니다.
+                    # start_ffmpeg에서 정의한 파일 생성 규칙과 동일하게 매칭하기 위해 recordings 폴더 안의 해당 파일 검색
+                    target_file = None
+                    for file in os.listdir(RECORD_DIR):
+                        if file.startswith(sid) and file.endswith(".webm") and not file.endswith("_fixed.webm"):
+                            target_file = os.path.join(RECORD_DIR, file)
+                            break
+                    
+                    if target_file and os.path.exists(target_file):
+                        fixed_file = target_file.replace(".webm", "_fixed.webm")
+                        
+                        # 인코딩 없이 초고속으로 깨진 인덱스 포인터만 재배열합니다.
+                        subprocess.run([
+                            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                            "-err_detect", "ignore_err",
+                            "-i", target_file,
+                            "-c", "copy",
+                            fixed_file
+                        ], check=True)
+                        
+                        # 찌꺼기가 남지 않게 원본 깨진 파일은 지우고 복구본의 이름을 원본으로 대체합니다.
+                        os.remove(target_file)
+                        os.rename(fixed_file, target_file)
+                        print(f"[RECONSTRUCT] session={sid} 구조 무결성 복구 완료")
+                except Exception as remux_err:
+                    print(f"[RECONSTRUCT ERROR] 파일 무결성 정렬 중 실패: {remux_err}")
 
             body = b"merge done"
             self.send_response(200)
